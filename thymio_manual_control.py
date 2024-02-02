@@ -16,11 +16,12 @@ from matplotlib import collections  as mc
 import random
 from scipy.spatial import cKDTree as KDTree      
 
+
+
 # Define the robot's operation class: forward() backward() left() right() stop()
 class Operation:
     def __init__(self):
         self.speed = 5
-
     def forward(self, speed_factor=1.0):
         self.speed = 5 * speed_factor
         motor_left.setVelocity(self.speed)
@@ -45,11 +46,30 @@ class Operation:
         self.speed = 0
         motor_left.setVelocity(self.speed)
         motor_right.setVelocity(self.speed)
-        
-        
 
+# Robot right rotation at a specified angle (under angular system)
+def Robot_R(robot, operation, degree):
+    rotation = degree/90*86
+    counter = 0
+    while (robot.step(timestep) != -1):
+        if(counter>rotation):
+            break
+        counter += 1
+        operation.rotate_R()
+
+# Robot left rotation at a specified angle (under angular system)
+def Robot_L(robot, operation, degree):
+    rotation = degree/90*86
+    counter = 0
+    while (robot.step(timestep) != -1):
+        if(counter>rotation):
+            break
+        counter += 1
+        operation.rotate_L()
+        
+        
 # Using the keyboard to control robot movement      
-def keyBoard_Controller(keyboard, node, lidar, robot, operation, motor_left, motor_right, pos_x, pos_y, theta, plan_xy):
+def keyBoard_Controller(keyboard, node, lidar, robot, operation, motor_left, motor_right, pos_x, pos_y, theta):
 
     interactive = False
     fig = plt.figure()
@@ -79,12 +99,8 @@ def keyBoard_Controller(keyboard, node, lidar, robot, operation, motor_left, mot
             operation.rotate_R()
         elif (key==ord('C')) :
             operation.stop()
-            registration = PointCloudRegistration()
             reqR, reqT = registration.ICPSVD(fixed_points_x, fixed_points_y, movingX, movingY)
-            # moving = [[x, y] for x, y in zip(N_movingX, N_movingY)]
-            # fixed = [[x, y] for x, y in zip(N_fixedX, N_fixedY)]
             print(f'Rotation matrix {reqR}, Translation matrix {reqT}')
-            # draw_ICR(moving, fixed, reqR, reqT)
         elif (key==ord('S')) :
             break
         else:
@@ -102,13 +118,42 @@ def keyBoard_Controller(keyboard, node, lidar, robot, operation, motor_left, mot
             
         # Get lidar data
         point_cloud = lidar.getRangeImage()
-        plan_x, plan_y, plan_pt_x, plan_pt_y, plan_pt_x_est, plan_pt_y_est = polar_2_cart(point_cloud, xyz, rotation, xyz_est, rotation_est)
+        plan_pt_x, plan_pt_y, plan_pt_x_est, plan_pt_y_est, GAPs, protection_angle = polar_2_cart(point_cloud, xyz, rotation, xyz_est, rotation_est)
         
-        # Point cloud under robot coordinate 
-        list_scatter_x.append(plan_x)
-        list_scatter_y.append(plan_y)
-        plan_xy = [list_scatter_x, list_scatter_y]
+        idx = 0
+        length_max = 0
+        dw = 2*math.pi / lidar.getHorizontalResolution()
+        protection_left = [protection_angle-i*dw for i in range(1000)]
+        protections_right = [protection_angle+i*dw for i in range(1010)]
+        protection_sequence = protection_left + protections_right
         
+        for key, values in GAPs.items():
+            if any(item in values['angle'] for item in protection_sequence):
+                indexes_to_remove = [i for i, item in enumerate(values['angle']) if item in protection_sequence]
+                values['angle'] = [item for i, item in enumerate(values['angle']) if i not in indexes_to_remove]
+                values['x'] = [item for i, item in enumerate(values['x']) if i not in indexes_to_remove]
+                values['y'] = [item for i, item in enumerate(values['y']) if i not in indexes_to_remove]
+
+        for N, position in GAPs.items():
+            
+            if length_max < len(position['angle']):
+                length_max = len(position['angle'])
+                idx = N
+        try:
+            angle = GAPs[str(idx)]['angle'][len(GAPs[str(idx)]['angle'])-1]
+            angle = (math.degrees(angle) + 180)%360 - 180
+        except:
+            angle = angle
+            
+        counter += 1
+        if counter >0:
+            counter = 0
+            if angle < -1.5:
+                Robot_L(robot, operation, abs(angle))
+            elif angle > 1.5:
+                Robot_R(robot, operation, abs(angle))
+        operation.forward()
+
         # Point cloud under world coordinate - real robot
         list_scatter_pt_x.append(plan_pt_x)
         list_scatter_pt_y.append(plan_pt_y)
@@ -128,124 +173,133 @@ def keyBoard_Controller(keyboard, node, lidar, robot, operation, motor_left, mot
         list_pos_x_est.append(pos_x)
         list_pos_y_est.append(pos_y)
         
-        movingX = plan_pt_x_est
-        movingY = plan_pt_y_est
-        
-        # Make correction per 5s
-        counter += 1
-        if counter>500: 
-            counter = 0
-            registration = PointCloudRegistration()
-            reqR, reqT = registration.ICPSVD(fixed_points_x, fixed_points_y, movingX, movingY)
-            pos_corrected = np.dot(reqR, [pos_x, pos_y]) + reqT
-            print(f"position correction:  ({round(pos_x,1)}, {round(pos_y,1)}) -> ({round(pos_corrected[0],1)}, {round(pos_corrected[1],1)})")
-            pos_x, pos_y = pos_corrected[0], pos_corrected[1]
         
         # Monitor of the position in real time
         if interactive:
-            update_plot(fig, interactive, list_pos_x_est, list_pos_y_est, list_pos_x_real, list_pos_y_real, plan_xy, plan_pt_xy, plan_pt_xy_est)
+            update_plot(fig, interactive, list_pos_x_est, list_pos_y_est, list_pos_x_real, list_pos_y_real, plan_pt_xy, plan_pt_xy_est, GAPs[str(idx)])
         else:
             pass
-    update_plot(fig, interactive, list_pos_x_est, list_pos_y_est, list_pos_x_real, list_pos_y_real, plan_xy, plan_pt_xy, plan_pt_xy_est)
+    update_plot(fig, interactive, list_pos_x_est, list_pos_y_est, list_pos_x_real, list_pos_y_real, plan_pt_xy, plan_pt_xy_est, GAPs[str(idx)])
 
 
 
-# Using the keyboard to control robot movement      
-def keyBoard_Controller_lidar(keyboard, node, lidar, robot, operation, motor_left, motor_right, pos_x, pos_y, theta, plan_xy):
+# Calculate angle and distance from current position to target position
+def calculate_movement_parameters(robot_pos, robot_theta, target_pos):
 
-    interactive = True
-    fig = plt.figure()
+    # print(f"robot position: {robot_pos}, target position: {target_pos}, angle: {robot_theta}")
+    dx = target_pos[0] - robot_pos[0]
+    dy = target_pos[1] - robot_pos[1]
+
+    # Calculate angle and distance referenced by the robot
+    distance = math.sqrt(dx**2 + dy**2)
+    angle_to_target = math.atan2(dy, dx)
+
+    # Rotate to the target angle starting by its original angle
+    rotation_angle = angle_to_target - robot_theta
+    rotation_angle = (rotation_angle + math.pi) % (2 * math.pi) - math.pi
+    # print(f"{rotation_angle}, {distance}")
+
+    return rotation_angle, distance
     
-    fixed_points_x, fixed_points_y  = discretize_wall_segments()
+    
+    
+def update_robot_position(displacement_left, deplacement_right, pos_x, pos_y, theta):
 
-    # Record history of position 
-    list_pos_x_est, list_pos_y_est   = [], []
-    list_pos_x_real, list_pos_y_real = [], []
- 
-    movingX, movingY = [], []
+    delta_s = (deplacement_right + displacement_left) / 2
+    delta_theta = (deplacement_right - displacement_left) / wheel_base
+
+    # Update the robot's orientation
+    theta += delta_theta
+
+    # Update the robot's position
+    pos_x += delta_s * math.cos(theta + delta_theta / 2)
+    pos_y += delta_s * math.sin(theta + delta_theta / 2)
+    theta = theta % (2 * math.pi)  # Keep theta within [0, 2Ï€]
+    return pos_x, pos_y, theta
     
-    counter = 0 # update ratio
-    start = True # init value at beginning
-    init = 0 # warm-up 
-    
-    while (robot.step(timestep) != -1): #Appel d'une 脙漏tape de simulation
-        init += 1 
-        
-        key=keyboard.getKey()
-        if (key==keyboard.UP) :
-            operation.forward()
-        elif (key==keyboard.DOWN) :
-            operation.back()
-        elif (key==keyboard.LEFT) :
-            operation.rotate_L()
-        elif (key==keyboard.RIGHT) :
-            operation.rotate_R()
-        elif (key==ord('C')) :
-            operation.stop()
-        elif (key==ord('S')) :
-            break
-        else:
-            operation.stop()
+
+
+# Construct position around by cloud    
+def polar_2_cart(point_cloud, xyz, rotation, xyz_est, rotation_est):
+
+    list_pt_x, list_pt_y, list_pt_x_est, list_pt_y_est = [], [], [], []
+    angle = 0
+    ouverture = math.pi/2
+    GAPs = {}
+    seuil = 0.35
+    min_distance = 999
+    angle_idx = 0
+    numero = 0
+    keep_numero = True
+    for i in point_cloud:
+        # if  math.cos(angle) >= 0:
+        if  angle < ouverture  or angle > 2*math.pi-ouverture:
+            xy = [i*math.sin(angle)*100, 0, i*math.cos(angle)*100]
             
-        # real position
-        xyz =  node.getPosition()
-        rotation = node.getOrientation()
-        
-        # simulated position
-        xyz_est = [ pos_y/100, 0.0, pos_x/100 ]
-        rotation_est = theta
+            if i < min_distance:
+                angle_idx = angle
+                min_distance = i
             
-        # Get lidar data
-        point_cloud = lidar.getRangeImage()
-        # print(point_cloud)
-        plan_x, plan_y, _, _, _, _= polar_2_cart(point_cloud, xyz, rotation, xyz_est, rotation_est)
-        if start:
-            start = False
-            pre_movingX = plan_x
-            pre_movingY = plan_y
-        
-        # Add position to history
-        pos_x_real, pos_y_real = node.getPosition()[2], node.getPosition()[0]
-        list_pos_x_real.append(pos_x_real * 100)
-        list_pos_y_real.append(pos_y_real * 100)
-        
-        movingX = plan_x
-        movingY = plan_y
-        moving = [[x, y] for x, y in zip(movingX, movingY)]
-        
-        list_pos_x_est.append(pos_x)
-        list_pos_y_est.append(pos_y)
-        
-        counter += 1
-        if counter>90 : 
-            counter = 0
-            registration = PointCloudRegistration()
-            reqR, reqT = registration.ICPSVD(movingX, movingY, pre_movingX, pre_movingY)
-            inverse_reqR = np.linalg.inv(reqR)
-            pos_corrected = np.dot([pos_x, pos_y]-reqT, inverse_reqR) 
-            # pos_corrected = np.dot(reqR, [pos_x, pos_y]) + reqT
-            print(f"position correction:  ({round(pos_x,1)}, {round(pos_y,1)}) -> ({round(pos_corrected[0],1)}, {round(pos_corrected[1],1)})")
-            pos_x, pos_y = pos_corrected[0], pos_corrected[1]
+            if i > seuil:
             
-            pre_moving = [[x, y] for x, y in zip(pre_movingX, pre_movingY)]
-            
-            corrected_premoving = []
-            for point in pre_moving:
-                # reqR and reqT are the rotation and translation matrices to correct the moving point cloud
-                corrected_point = np.dot(reqR, point) + reqT
-                corrected_premoving.append(corrected_point)
-            pre_movingX = movingX
-            pre_movingY = movingY
+                if keep_numero:
+                    pass
+                else:
+                    numero += 1
+                    keep_numero = True
                     
-        # Monitor of the position in real time
-        if interactive and init>100:
-            # ICP_match(interactive, pre_moving, moving, corrected_premoving)
-            update_plot_lidar(fig, interactive, plan_x, plan_y, list_pos_x_est, list_pos_y_est, list_pos_x_real, list_pos_y_real)
+                try:
+                    GAPs[str(numero)]['x'].append(i*math.cos(angle)*100)
+                    GAPs[str(numero)]['y'].append(-i*math.sin(angle)*100)
+                    GAPs[str(numero)]['angle'].append(angle)
+                except:
+                    GAPs[str(numero)] = {}
+                    GAPs[str(numero)]['x'] = []
+                    GAPs[str(numero)]['y'] = []
+                    GAPs[str(numero)]['angle'] = []
+                    GAPs[str(numero)]['x'].append(i*math.cos(angle)*100)
+                    GAPs[str(numero)]['y'].append(-i*math.sin(angle)*100)
+                    GAPs[str(numero)]['angle'].append(angle)
+            else:
+                keep_numero = False
+                
+                
         else:
-            pass
-    update_plot_lidar(fig, interactive, plan_x, plan_y, list_pos_x_est, list_pos_y_est, list_pos_x_real, list_pos_y_real)
+            angle += 2*math.pi / lidar.getHorizontalResolution()
+            continue
+    
+        # Example given by the teacher
+        pt = multmatr(rotation, xy, xyz)
+        list_pt_x.append(pt[2])
+        list_pt_y.append(-pt[0])
+
+        # Manual define the rotation and translation matrix
+        R = np.array([[np.cos(rotation_est), -np.sin(rotation_est)], [np.sin(rotation_est), np.cos(rotation_est)]])
+        T = np.array([-xyz_est[0]*100, xyz_est[2]*100]) 
+        X = np.array([xy[0], xy[2]])
+        pt = np.dot(R, X) + T
+        list_pt_x_est.append(pt[1])
+        list_pt_y_est.append(-pt[0])
+        
+      
+        angle += 2*math.pi / lidar.getHorizontalResolution()
+    
+    return  list_pt_x, list_pt_y, list_pt_x_est, list_pt_y_est, GAPs, angle_idx
 
 
+    
+# RX+T
+def multmatr(R,X,T):
+    res = []
+    res.append( R[0] * X[0] + R[3] * X[1] + R[6] * X[2] - T[0]*100)
+    res.append( R[1] * X[0] + R[4] * X[1] + R[7] * X[2] + T[1]*100)
+    res.append( R[2] * X[0] + R[5] * X[1] + R[8] * X[2] + T[2]*100)
+  
+    return res    
+    
+    
+
+# Draw the ICP transformation from t to t+1
 def ICP_match(interactive, pre_moving, moving, corrected_premoving):
     if interactive:
         # Interactive mode
@@ -277,19 +331,55 @@ def ICP_match(interactive, pre_moving, moving, corrected_premoving):
         plt.show()
 
 
-# Plot for Lidar based 
-def update_plot_lidar(fig, interactive, plan_x, plan_y, list_pos_x_est, list_pos_y_est, list_pos_x_real, list_pos_y_real):
+
+
+# Draw ICR Cloud to show the correction
+def draw_ICR(moving, fixed, reqR, reqT):
+    
+    corrected_moving = []
+    for point in moving:
+        corrected_point = np.dot(reqR, point) + reqT
+        corrected_moving.append(corrected_point)
+
+    moving_array = np.array(moving)
+    corrected_array = np.array(corrected_moving)
+    fixed_array = np.array(fixed)
+
+    plt.figure(figsize=(8, 6))
+    plt.scatter(fixed_array[:, 0], fixed_array[:, 1], color='blue', label='Fixed Points', s=30)
+    plt.scatter(moving_array[:, 0], moving_array[:, 1], color='red', label='Moving Points', s=30)
+    plt.scatter(corrected_array[:, 0], corrected_array[:, 1], color='orange', label='Corrected Points', s=50)
+
+    plt.title('ICP Alignment', fontsize=16)
+    plt.xlabel('X Position', fontsize=14)
+    plt.ylabel('Y Position', fontsize=14)
+    plt.tick_params(axis='both', which='major', labelsize=12)
+    
+    plt.grid(True, linestyle='--', alpha=0.6)
+    plt.legend(fontsize=12)
+    
+    plt.tight_layout()
+    plt.show()
+    
+    
+    
+# Virtualization
+def update_plot(fig, interactive, list_pos_x_est, list_pos_y_est, list_pos_x_real, list_pos_y_real, plan_pt_xy, plan_pt_xy_est,gap):
     
     if interactive:
         # Interactive mode
         plt.ion()
     
+    sample_plan_xy = plan_pt_xy
+    sample_plan_xy_est = plan_pt_xy_est
     ax = fig.add_subplot(111, projection='3d')
+    ax.scatter(gap['x'], gap['y'], s=10,  label='GAP')
+    ax.scatter(sample_plan_xy[0], sample_plan_xy[1], s=1,  label='Real Obs')
+    # ax.scatter(sample_plan_xy_est[0], sample_plan_xy_est[1], s=1,  label='Estimated Obs')
 
     # Plot simulated and real robots
     ax.plot(list_pos_x_real, list_pos_y_real, label='Real Robot')
     ax.plot(list_pos_x_est, list_pos_y_est, label='Estimated Robot')
-    ax.scatter(plan_x, plan_y)
 
     # Pre-set internal walls
     ax.plot([0, -50], [0, 0], color='black', linestyle='-', linewidth=5, label='Internal Wall')
@@ -329,130 +419,7 @@ def update_plot_lidar(fig, interactive, plan_x, plan_y, list_pos_x_est, list_pos
     else:
         plt.show()
     
-    
-# Construct position around by cloud    
-def polar_2_cart(point_cloud, xyz, rotation, xyz_est, rotation_est):
-
-    list_x, list_y, list_pt_x, list_pt_y, list_pt_x_est, list_pt_y_est = [], [], [], [], [], []
-    angle = 0
-    for i in point_cloud:
-        xy = [i*math.sin(angle)*100, 0, i*math.cos(angle)*100]
-        list_x.append(xy[2])
-        list_y.append(-xy[0])
-        
-        # Example given by the teacher
-        pt = multmatr(rotation, xy, xyz)
-        list_pt_x.append(pt[2])
-        list_pt_y.append(-pt[0])
-
-        # Manual define the rotation and translation matrix
-        R = np.array([[np.cos(rotation_est), -np.sin(rotation_est)], [np.sin(rotation_est), np.cos(rotation_est)]])
-        T = np.array([-xyz_est[0]*100, xyz_est[2]*100]) 
-        X = np.array([xy[0], xy[2]])
-        pt = np.dot(R, X) + T
-        list_pt_x_est.append(pt[1])
-        list_pt_y_est.append(-pt[0])
-        
-        angle += 2*math.pi / lidar.getHorizontalResolution()
-    
-    return list_x, list_y, list_pt_x, list_pt_y, list_pt_x_est, list_pt_y_est
-     
-
-# RX+T
-def multmatr(R,X,T):
-    res = []
-    res.append( R[0] * X[0] + R[3] * X[1] + R[6] * X[2] - T[0]*100)
-    res.append( R[1] * X[0] + R[4] * X[1] + R[7] * X[2] + T[1]*100)
-    res.append( R[2] * X[0] + R[5] * X[1] + R[8] * X[2] + T[2]*100)
-  
-    return res    
-    
-
-# Draw ICR Cloud to show the correction
-def draw_ICR(moving, fixed, reqR, reqT):
-    
-    corrected_moving = []
-    for point in moving:
-        corrected_point = np.dot(reqR, point) + reqT
-        corrected_moving.append(corrected_point)
-
-    moving_array = np.array(moving)
-    corrected_array = np.array(corrected_moving)
-    fixed_array = np.array(fixed)
-
-    plt.figure(figsize=(8, 6))
-    plt.scatter(fixed_array[:, 0], fixed_array[:, 1], color='blue', label='Fixed Points', s=30)
-    plt.scatter(moving_array[:, 0], moving_array[:, 1], color='red', label='Moving Points', s=30)
-    plt.scatter(corrected_array[:, 0], corrected_array[:, 1], color='orange', label='Corrected Points', s=50)
-
-    plt.title('ICP Alignment', fontsize=16)
-    plt.xlabel('X Position', fontsize=14)
-    plt.ylabel('Y Position', fontsize=14)
-    plt.tick_params(axis='both', which='major', labelsize=12)
-    
-    plt.grid(True, linestyle='--', alpha=0.6)
-    plt.legend(fontsize=12)
-    
-    plt.tight_layout()
-    plt.show()
-    
-    
-# Virtualization
-def update_plot(fig, interactive, list_pos_x_est, list_pos_y_est, list_pos_x_real, list_pos_y_real, plan_xy, plan_pt_xy, plan_pt_xy_est):
-    
-    if interactive:
-        # Interactive mode
-        plt.ion()
-    
-    sample_plan_xy = plan_pt_xy
-    sample_plan_xy_est = plan_pt_xy_est
-    ax = fig.add_subplot(111, projection='3d')
-
-    ax.scatter(sample_plan_xy[0], sample_plan_xy[1], s=1,  label='Real Obs')
-    # ax.scatter(sample_plan_xy_est[0], sample_plan_xy_est[1], s=1,  label='Estimated Obs')
-
-    # Plot simulated and real robots
-    ax.plot(list_pos_x_real, list_pos_y_real, label='Real Robot')
-    # ax.plot(list_pos_x_est, list_pos_y_est, label='Estimated Robot')
-
-    # Pre-set internal walls
-    ax.plot([0, -50], [0, 0], color='black', linestyle='-', linewidth=5, label='Internal Wall')
-    ax.plot([0, 0], [50, -50], color='black', linestyle='-', linewidth=5)
-    ax.plot([0, 50], [50, 50], color='black', linestyle='-', linewidth=5)
-    
-    # Pre-set other walls
-    ax.plot([-25, 75], [75, 75], color='black', linestyle='-', linewidth=2)
-    ax.plot([75,75], [75, 25], color='black', linestyle='-', linewidth=2)
-    ax.plot([75, 25], [25, 25], color='black', linestyle='-', linewidth=2)
-    ax.plot([25, 25], [25, -75], color='black', linestyle='-', linewidth=2)
-    ax.plot([25, -25], [-75, -75], color='black', linestyle='-', linewidth=2)
-    ax.plot([-25, -25], [-75, -25], color='black', linestyle='-', linewidth=2)
-    ax.plot([-25, -75], [-25, -25], color='black', linestyle='-', linewidth=2)
-    ax.plot([-75, -75], [25, -25], color='black', linestyle='-', linewidth=2)
-    ax.plot([-25, -75], [25, 25], color='black', linestyle='-', linewidth=2)
-    ax.plot([-25, -25], [25, 75], color='black', linestyle='-', linewidth=2)
-    
-    # Set labels
-    ax.set_xlabel('X Position')
-    ax.set_ylabel('Y Position')
-    ax.legend()
-    
-    # Set view angle to top-down (90 degrees)
-    ax.view_init(90, 180)
-    
-    ax.zaxis.set_ticks([])
-    
-    points_x, points_y  = discretize_wall_segments()
-    # ax.scatter(points_x, points_y, alpha=0.5, color='royalblue', label='Discretized Points', edgecolors='black')
-
-    plt.draw()
-    plt.tight_layout()
-    if interactive:
-        plt.pause(0.001)
-        plt.clf() 
-    else:
-        plt.show()
-    
+ 
  
 # Calculate deplacement for dt
 def calculate_wheel_deplacement(motor_left, motor_right):
@@ -462,6 +429,7 @@ def calculate_wheel_deplacement(motor_left, motor_right):
     deplacement_right = motor_right.getVelocity() * WHEEL_RADIUS * dt
 
     return deplacement_left, deplacement_right
+    
     
 
 # Update position as the formula
@@ -480,56 +448,62 @@ def update_robot_position(displacement_left, deplacement_right, pos_x, pos_y, th
     return pos_x, pos_y, theta
     
     
+# ICP class  
 class PointCloudRegistration:
     def __init__(self):
         # Initialize rotation matrix as identity and translation vector as zeros
         self.reqR = np.identity(2)
         self.reqT = np.zeros(2)
 
-    def indxtMean(self, index, arrays):
-        # Calculate the mean of selected points in arrays
-        indxSum = np.sum(arrays[index], axis=0)
-        return indxSum / len(index)
+    def indxtMean(self, index,arrays):
+        indxSum = np.zeros(3)
+        for i in range(np.size(index,0)):
+            indxSum = np.add(indxSum, np.array(arrays[index[i]]), out = indxSum ,casting = 'unsafe')
+        return indxSum/np.size(index,0)
 
-    def indxtfixed(self, index, arrays):
-        # Extract selected points from arrays
-        return np.asarray([arrays[i] for i in index])
+    def indxtfixed(self, index,arrays):
+        T = []
+        for i in index:
+            T.append(arrays[i])
+        return np.asanyarray(T)
 
     def ICPSVD(self, fixedX, fixedY, movingX, movingY):
-        # Convert input coordinates to 3D points
-        fixedt = np.column_stack((fixedX, fixedY, np.zeros_like(fixedX)))
-        movingt = np.column_stack((movingX, movingY, np.zeros_like(movingX)))
+        reqR = np.identity(3)
+        reqT = np.zeros(3)
+        fixedt = []
+        movingt = []
+        for i in range(len(fixedX)):
+            fixedt.append([fixedX[i], fixedY[i], 0])
+        for i in range(len(movingX)):
+            movingt.append([movingX[i], movingY[i], 0])
         moving = np.asarray(movingt)
         fixed = np.asarray(fixedt)
 
-        n = np.size(moving, 0)
+        n = np.size(moving,0)
         TREE = KDTree(fixed)
-
         for i in range(10):
-            # Find nearest neighbors using KDTree
-            distance, index = TREE.query(moving[:, :2])
-            index = [x - 1 if x >= len(fixed) else x for x in index]
+            distance, index = TREE.query(moving)
+            index = [ x-1 if x >= len(fixed) else x for x in index]
 
             err = np.mean(distance**2)
-            com = np.mean(moving, axis=0)
-            cof = self.indxtMean(index, fixed)
-
-            # Compute the transformation matrix using Singular Value Decomposition (SVD)
-            W = np.dot(np.transpose(moving[:, :2]), self.indxtfixed(index, fixed[:, :2])) - n * np.outer(com[:2], cof[:2])
-
+            com = np.mean(moving,0)
+            # print(max(index))
+            cof = self.indxtMean(index,fixed)
+            
+            W = np.dot(np.transpose(moving),self.indxtfixed(index,fixed)) - n*np.outer(com,cof)
             try:
-                U, _, V = np.linalg.svd(W, full_matrices=False)
-                tempR = np.dot(V.T, U.T)
-                tempT = cof[:2] - np.dot(tempR, com[:2])
-
-                # Update the moving points and transformation
-                moving[:, :2] = np.dot(moving[:, :2], tempR.T) + tempT
-                self.reqR = np.dot(tempR, self.reqR)
-                self.reqT = np.dot(tempR, self.reqT) + tempT
+                U , _ , V = np.linalg.svd(W, full_matrices = False)
+                tempR = np.dot(V.T,U.T)
+                tempT = cof - np.dot(tempR,com)
+    
+                moving = (tempR.dot(moving.T)).T
+                moving = np.add(moving,tempT)
+                reqR=np.dot(tempR,reqR)
+                reqT = np.add(np.dot(tempR,reqT),tempT)
             except:
-                return np.identity(2), np.zeros(2)
+                return [[1,0],[0,1]], [1,0]
+        return reqR[:2, :2], reqT[:2]
 
-        return self.reqR, self.reqT
 
 
 # Distretize the wall segments
@@ -581,6 +555,7 @@ if __name__=="__main__":
     lidar.enable(timestep)
     lidar.enablePointCloud()
     
+    registration = PointCloudRegistration()
     operation = Operation()
     keyboard=Keyboard()
     keyboard.enable(timestep)
@@ -593,13 +568,11 @@ if __name__=="__main__":
     pos_x = node.getPosition()[2]*100  # init x position  
     pos_y = node.getPosition()[0]*100  # init y position  
     theta = 0  # orientation in radians
-    plan_xy = [0, 0]
     
-    print(f'Initial Position State : [x={round(pos_x,1)} , y={round(pos_y,1)}, theta={round(theta,1)}]')
     
     # Passive-control by Keyboard
     print("keyboard controller activated [####################] 100%")
-    keyBoard_Controller(keyboard, node, lidar, robot, operation, motor_left, motor_right, pos_x, pos_y, theta, plan_xy)
+    keyBoard_Controller(keyboard, node, lidar, robot, operation, motor_left, motor_right, pos_x, pos_y, theta)
     print(">> Exit keyboard control")
     #discretize_wall_segments()
     
