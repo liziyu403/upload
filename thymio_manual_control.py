@@ -71,7 +71,7 @@ def Robot_L(robot, operation, degree):
 # Using the keyboard to control robot movement      
 def keyBoard_Controller(keyboard, node, lidar, robot, operation, motor_left, motor_right, pos_x, pos_y, theta):
 
-    interactive = False
+    interactive = True
     fig = plt.figure()
     
     fixed_points_x, fixed_points_y  = discretize_wall_segments()
@@ -89,22 +89,8 @@ def keyBoard_Controller(keyboard, node, lidar, robot, operation, motor_left, mot
     while (robot.step(timestep) != -1): 
            
         key=keyboard.getKey()
-        if (key==keyboard.UP) :
-            operation.forward()
-        elif (key==keyboard.DOWN) :
-            operation.back()
-        elif (key==keyboard.LEFT) :
-            operation.rotate_L()
-        elif (key==keyboard.RIGHT) :
-            operation.rotate_R()
-        elif (key==ord('C')) :
-            operation.stop()
-            reqR, reqT = registration.ICPSVD(fixed_points_x, fixed_points_y, movingX, movingY)
-            print(f'Rotation matrix {reqR}, Translation matrix {reqT}')
-        elif (key==ord('S')) :
+        if (key==ord('S')) :
             break
-        else:
-            operation.stop()
             
         # Real position
         xyz =  node.getPosition()
@@ -123,37 +109,37 @@ def keyBoard_Controller(keyboard, node, lidar, robot, operation, motor_left, mot
         idx = 0
         length_max = 0
         dw = 2*math.pi / lidar.getHorizontalResolution()
-        protection_left = [protection_angle-i*dw for i in range(1000)]
-        protections_right = [protection_angle+i*dw for i in range(1010)]
-        protection_sequence = protection_left + protections_right
-        
+        protection_left = protection_angle - 75*dw
+        protection_right = protection_angle + 75*dw #[protection_angle+i*dw for i in range(100)]
         for key, values in GAPs.items():
-            if any(item in values['angle'] for item in protection_sequence):
-                indexes_to_remove = [i for i, item in enumerate(values['angle']) if item in protection_sequence]
+            if any((item>protection_left and item<protection_right)  for item in values['angle']):
+                indexes_to_remove = [i for i, item in enumerate(values['angle']) if (item>protection_left and item<protection_right)]
                 values['angle'] = [item for i, item in enumerate(values['angle']) if i not in indexes_to_remove]
                 values['x'] = [item for i, item in enumerate(values['x']) if i not in indexes_to_remove]
                 values['y'] = [item for i, item in enumerate(values['y']) if i not in indexes_to_remove]
-
+                values['distance'] = [item for i, item in enumerate(values['distance']) if i not in indexes_to_remove]
         for N, position in GAPs.items():
-            
             if length_max < len(position['angle']):
                 length_max = len(position['angle'])
                 idx = N
         try:
-            angle = GAPs[str(idx)]['angle'][len(GAPs[str(idx)]['angle'])-1]
+            distance = GAPs[str(idx)]['distance'][int((len(GAPs[str(idx)]['distance'])-1)/2)]
+            angle = GAPs[str(idx)]['angle'][int((len(GAPs[str(idx)]['angle'])-1)/2)]
             angle = (math.degrees(angle) + 180)%360 - 180
         except:
-            angle = angle
-            
+            angle = 0
+            distance = 0
+        if angle < 0:
+            operation.rotate_L()
+            # Robot_L(robot, operation, abs(angle))
+        elif angle >= 0:
+            operation.rotate_R()   
+                
+            # Robot_R(robot, operation, abs(angle))
         counter += 1
-        if counter >0:
-            counter = 0
-            if angle < -1.5:
-                Robot_L(robot, operation, abs(angle))
-            elif angle > 1.5:
-                Robot_R(robot, operation, abs(angle))
-        operation.forward()
-
+        if (abs(angle)<20 and counter%2==0):
+            operation.forward(1+min(0.9, distance))
+        
         # Point cloud under world coordinate - real robot
         list_scatter_pt_x.append(plan_pt_x)
         list_scatter_pt_y.append(plan_pt_y)
@@ -176,7 +162,10 @@ def keyBoard_Controller(keyboard, node, lidar, robot, operation, motor_left, mot
         
         # Monitor of the position in real time
         if interactive:
-            update_plot(fig, interactive, list_pos_x_est, list_pos_y_est, list_pos_x_real, list_pos_y_real, plan_pt_xy, plan_pt_xy_est, GAPs[str(idx)])
+            try:
+                update_plot(fig, interactive, list_pos_x_est, list_pos_y_est, list_pos_x_real, list_pos_y_real, plan_pt_xy, plan_pt_xy_est, GAPs[str(idx)])
+            except: 
+                pass
         else:
             pass
     update_plot(fig, interactive, list_pos_x_est, list_pos_y_est, list_pos_x_real, list_pos_y_real, plan_pt_xy, plan_pt_xy_est, GAPs[str(idx)])
@@ -184,8 +173,7 @@ def keyBoard_Controller(keyboard, node, lidar, robot, operation, motor_left, mot
 
 
 # Calculate angle and distance from current position to target position
-def calculate_movement_parameters(robot_pos, robot_theta, target_pos):
-
+ 
     # print(f"robot position: {robot_pos}, target position: {target_pos}, angle: {robot_theta}")
     dx = target_pos[0] - robot_pos[0]
     dy = target_pos[1] - robot_pos[1]
@@ -226,13 +214,19 @@ def polar_2_cart(point_cloud, xyz, rotation, xyz_est, rotation_est):
     angle = 0
     ouverture = math.pi/2
     GAPs = {}
-    seuil = 0.35
+    seuil = 0.25
     min_distance = 999
     angle_idx = 0
     numero = 0
     keep_numero = True
+    counter = False
     for i in point_cloud:
         # if  math.cos(angle) >= 0:
+        if not counter:
+            counter = True
+            continue
+        else:
+            pass
         if  angle < ouverture  or angle > 2*math.pi-ouverture:
             xy = [i*math.sin(angle)*100, 0, i*math.cos(angle)*100]
             
@@ -243,7 +237,7 @@ def polar_2_cart(point_cloud, xyz, rotation, xyz_est, rotation_est):
             if i > seuil:
             
                 if keep_numero:
-                    pass
+                    pass # 方法不理想，因为实际是一个循环buffer
                 else:
                     numero += 1
                     keep_numero = True
@@ -251,14 +245,17 @@ def polar_2_cart(point_cloud, xyz, rotation, xyz_est, rotation_est):
                 try:
                     GAPs[str(numero)]['x'].append(i*math.cos(angle)*100)
                     GAPs[str(numero)]['y'].append(-i*math.sin(angle)*100)
+                    GAPs[str(numero)]['distance'].append(i)
                     GAPs[str(numero)]['angle'].append(angle)
                 except:
                     GAPs[str(numero)] = {}
                     GAPs[str(numero)]['x'] = []
                     GAPs[str(numero)]['y'] = []
+                    GAPs[str(numero)]['distance'] = []
                     GAPs[str(numero)]['angle'] = []
                     GAPs[str(numero)]['x'].append(i*math.cos(angle)*100)
                     GAPs[str(numero)]['y'].append(-i*math.sin(angle)*100)
+                    GAPs[str(numero)]['distance'].append(i)
                     GAPs[str(numero)]['angle'].append(angle)
             else:
                 keep_numero = False
@@ -283,7 +280,13 @@ def polar_2_cart(point_cloud, xyz, rotation, xyz_est, rotation_est):
         
       
         angle += 2*math.pi / lidar.getHorizontalResolution()
-    
+    try: 
+        if GAPs[str(len(GAPs.keys())-1)]['angle'][-1] >= 2*math.pi* (1-2/lidar.getHorizontalResolution()):
+            GAPs['0']['x'] += GAPs[str(len(GAPs.keys())-1)]['x']
+            GAPs['0']['y'] += GAPs[str(len(GAPs.keys())-1)]['y']
+            GAPs['0']['angle'] += GAPs[str(len(GAPs.keys())-1)]['angle']
+    except:
+        pass
     return  list_pt_x, list_pt_y, list_pt_x_est, list_pt_y_est, GAPs, angle_idx
 
 
@@ -373,14 +376,14 @@ def update_plot(fig, interactive, list_pos_x_est, list_pos_y_est, list_pos_x_rea
     sample_plan_xy = plan_pt_xy
     sample_plan_xy_est = plan_pt_xy_est
     ax = fig.add_subplot(111, projection='3d')
-    ax.scatter(gap['x'], gap['y'], s=10,  label='GAP')
+    # ax.scatter(gap['x'], gap['y'], s=10,  label='GAP')
     ax.scatter(sample_plan_xy[0], sample_plan_xy[1], s=1,  label='Real Obs')
-    # ax.scatter(sample_plan_xy_est[0], sample_plan_xy_est[1], s=1,  label='Estimated Obs')
+    ax.scatter(sample_plan_xy_est[0], sample_plan_xy_est[1], s=1,  label='Estimated Obs')
 
     # Plot simulated and real robots
-    ax.plot(list_pos_x_real, list_pos_y_real, label='Real Robot')
-    ax.plot(list_pos_x_est, list_pos_y_est, label='Estimated Robot')
-
+    # ax.plot(list_pos_x_real, list_pos_y_real, label='Real Robot')
+    # ax.plot(list_pos_x_est, list_pos_y_est, label='Estimated Robot')
+    """
     # Pre-set internal walls
     ax.plot([0, -50], [0, 0], color='black', linestyle='-', linewidth=5, label='Internal Wall')
     ax.plot([0, 0], [50, -50], color='black', linestyle='-', linewidth=5)
@@ -397,7 +400,7 @@ def update_plot(fig, interactive, list_pos_x_est, list_pos_y_est, list_pos_x_rea
     ax.plot([-75, -75], [25, -25], color='black', linestyle='-', linewidth=2)
     ax.plot([-25, -75], [25, 25], color='black', linestyle='-', linewidth=2)
     ax.plot([-25, -25], [25, 75], color='black', linestyle='-', linewidth=2)
-    
+    """
     # Set labels
     ax.set_xlabel('X Position')
     ax.set_ylabel('Y Position')
@@ -409,8 +412,9 @@ def update_plot(fig, interactive, list_pos_x_est, list_pos_y_est, list_pos_x_rea
     ax.zaxis.set_ticks([])
     
     points_x, points_y  = discretize_wall_segments()
-    ax.scatter(points_x, points_y, alpha=0.5, color='royalblue', label='Discretized Points', edgecolors='black')
-
+    # ax.scatter(points_x, points_y, alpha=0.5, color='royalblue', label='Discretized Points', edgecolors='black')
+    plt.xlim(-75,75)
+    plt.ylim(-75,75)
     plt.draw()
     plt.tight_layout()
     if interactive:
